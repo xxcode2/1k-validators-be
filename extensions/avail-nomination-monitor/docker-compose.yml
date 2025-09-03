@@ -1,0 +1,43 @@
+services:
+  mongo:
+    image: mongo:7
+    container_name: avail_mongo
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongo_data:/data/db
+    restart: unless-stopped
+
+  mongo-express:
+    image: mongo-express
+    depends_on: [mongo]
+    ports:
+      - "8081:8081"
+    environment:
+      ME_CONFIG_MONGODB_URL: mongodb://mongo:27017/
+    restart: unless-stopped
+
+  api:
+    build:
+      context: .           # <<< penting: context di root repo
+      dockerfile: Dockerfile
+      target: api
+    env_file: .env
+    ports:
+      - "3000:3000"
+    depends_on: [mongo]
+    restart: unless-stopped
+    command: ["node","packages/api/dist/index.js"]
+
+  worker:
+    build:
+      context: .           # <<< penting: context di root repo
+      dockerfile: Dockerfile
+      target: worker
+    env_file: .env
+    depends_on: [mongo]
+    restart: unless-stopped
+    command: ["node","packages/worker/dist/index.js"]
+
+volumes:
+  mongo_data:

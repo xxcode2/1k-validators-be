@@ -1,0 +1,16 @@
+{
+  "name": "nomination-program-monitoring-algorithm",
+  "private": true,
+  "workspaces": [
+    "packages/*"
+  ],
+  "scripts": {
+    "build": "npm -w packages/core run build && npm -w packages/db run build && npm -w packages/api run build && npm -w packages/worker run build",
+    "dev:api": "npm -w packages/api run dev",
+    "dev:worker": "npm -w packages/worker run dev"
+  },
+  "devDependencies": {
+    "@types/node": "^24.3.0",
+    "typescript": "^5.9.2"
+  }
+}
