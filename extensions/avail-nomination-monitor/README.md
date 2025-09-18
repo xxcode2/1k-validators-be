@@ -67,6 +67,16 @@ npm run dev:worker
 ```
 Set env vars accordingly.
 
+## Avail Nomination Monitor
+
+We provide an Avail-specific fork/extension using [avail-js-sdk](https://www.npmjs.com/package/avail-js-sdk)  
+to ensure compatibility with Avail’s custom runtime definitions (headers, extrinsics, types).
+
+- Run with:
+  ```bash
+  docker compose -f docker-compose.avail.yml up -d --build
+
+
 ## Notes
 - Collector currently has stubs where real Avail data fetching should be implemented using `avail-js-sdk` / RPC.
 - Add your actual logic in `packages/worker/src/pipelines/collect.ts`.
