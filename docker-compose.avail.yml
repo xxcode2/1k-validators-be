@@ -13,7 +13,7 @@ services:
     depends_on: [avail_mongo]
     environment:
       ME_CONFIG_MONGODB_URL: mongodb://avail_mongo:27017
-    ports: ["8081:8081"]
+    ports: ["8082:8081"]
 
   avail_api:
     container_name: avail_api
