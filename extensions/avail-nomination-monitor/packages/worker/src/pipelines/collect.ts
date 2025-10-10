@@ -19,6 +19,18 @@ const asStr = (v: any) => {
 
 const bn0 = new BN(0);
 
+function bnFromHex(hex?: string): BN {
+  try {
+    if (!hex) return bn0;
+    const s = String(hex);
+    if (s.startsWith('0x')) return new BN(s.slice(2), 16);
+    if (/^\d+$/.test(s)) return new BN(s, 10);
+    return bn0;
+  } catch {
+    return bn0;
+  }
+}
+
 async function getActiveEra(api: ApiPromise, logger: Logger): Promise<number> {
   try {
     const activeEraOpt = await (api.query as any)?.staking?.activeEra?.();
@@ -41,24 +53,40 @@ async function getValidators(api: ApiPromise, logger: Logger): Promise<string[]>
   }
 }
 
-async function getBondedAmount(api: ApiPromise, stash: string, logger: Logger): Promise<string> {
+// normalized bonded extractor
+async function getBondedNormalized(
+  api: ApiPromise,
+  stash: string,
+  logger: Logger
+): Promise<{ bondedAmount: string; nominatorCount?: number }> {
   try {
-    const activeEra = await getActiveEra(api, logger);
+    const activeEraOpt = await (api.query as any)?.staking?.activeEra?.();
+    const era = activeEraOpt?.unwrap?.()?.index ?? activeEraOpt?.index ?? 0;
+
     if ((api.query as any)?.staking?.erasStakersOverview) {
-      const overview = await (api.query as any).staking.erasStakersOverview(activeEra, stash);
-      const total = overview?.total ?? overview?.own ?? overview;
-      const s = asStr(total);
-      if (s && s !== '0') return s;
+      const ov = await (api.query as any).staking.erasStakersOverview(era, stash);
+      const j = ov?.toJSON?.() ?? null;
+      if (j && (j.total || j.own)) {
+        const totalBn = bnFromHex(j.total || j.own);
+        const bondedAmount = totalBn.gt(bn0) ? totalBn.toString(10) : '0';
+        return { bondedAmount, nominatorCount: Number(j.nominatorCount ?? 0) };
+      }
+
+      const total = (ov as any)?.total ?? (ov as any)?.own ?? ov;
+      const bondedAmount = bnFromHex(String(total)).toString(10);
+      return { bondedAmount, nominatorCount: Number((ov as any)?.nominatorCount ?? 0) };
     }
-  } catch {}
+  } catch (e) {
+    logger.warn('[collect] overview fallback:', e);
+  }
 
   try {
     if ((api.query as any)?.staking?.bonded && (api.query as any)?.staking?.ledger) {
       const controller = await (api.query as any).staking.bonded(stash);
       const ledger = controller ? await (api.query as any).staking.ledger(controller) : null;
       const active = ledger?.active;
-      const s = asStr(active);
-      if (s && s !== '0') return s;
+      const bondedAmount = bnFromHex(String(active)).toString(10);
+      if (bondedAmount !== '0') return { bondedAmount };
     }
   } catch {}
 
@@ -67,13 +95,13 @@ async function getBondedAmount(api: ApiPromise, stash: string, logger: Logger): 
     const arr = (locks as any)?.toArray?.() ?? [];
     let max = bn0;
     for (const l of arr) {
-      const val = new BN(asStr(l?.amount ?? l?.value ?? '0'));
+      const val = bnFromHex(String(l?.amount ?? l?.value ?? '0'));
       if (val.gt(max)) max = val;
     }
-    if (max.gt(bn0)) return max.toString();
+    if (max.gt(bn0)) return { bondedAmount: max.toString(10) };
   } catch {}
 
-  return '0';
+  return { bondedAmount: '0' };
 }
 
 type UpsertResult = { scanned: number; upserted: number };
@@ -84,53 +112,43 @@ export async function collectValidatorsSnapshot(logger: Logger = console): Promi
   const validators = await getValidators(api, logger);
 
   let upserted = 0;
-  const bondedMap = new Map<string, string>();
-  for (const addr of validators) {
-    const bonded = await getBondedAmount(api, addr, logger);
-    bondedMap.set(addr, bonded);
-  }
-  const safeBN = (v: string) => {
-  try {
-    if (!v) return new BN(0);
-    const s = v.toString().replace(/[^0-9]/g, ''); // buang karakter non-angka
-    if (!s) return new BN(0);
-    return new BN(s);
-  } catch {
-    return new BN(0);
-  }
-};
-
-const ranked = [...bondedMap.entries()]
-  .sort((a, b) => safeBN(b[1]).cmp(safeBN(a[1])))
-  .map(([addr]) => addr);
-
+  const bondedMap = new Map<string, { bondedAmount: string; nominatorCount?: number }>();
 
   for (const addr of validators) {
-    const bondedAmount = bondedMap.get(addr) ?? '0';
+    const info = await getBondedNormalized(api, addr, logger);
+    bondedMap.set(addr, info);
+  }
+
+  const ranked = [...bondedMap.entries()]
+    .sort((a, b) => new BN(a[1].bondedAmount).cmp(new BN(b[1].bondedAmount)) * -1)
+    .map(([addr]) => addr);
+
+  for (const addr of validators) {
+    const { bondedAmount, nominatorCount } = bondedMap.get(addr) ?? { bondedAmount: '0' };
     const rankInPool = ranked.indexOf(addr) >= 0 ? ranked.indexOf(addr) + 1 : 0;
-
     const now = new Date();
     const setOnInsert = { address: addr, firstSeenAt: now };
 
+    const $set: any = {
+      'current.era': era,
+      'current.inActiveSet': true,
+      'current.bondedAmount': bondedAmount,
+      'current.rankInPool': rankInPool,
+      'current.faults': 0,
+      'current.offlineSeconds': 0,
+      'current.unclaimedEras': 0,
+      'current.discoveryTenureDays': 0,
+      'current.recentNominations': 0,
+    };
+    if (typeof nominatorCount === 'number') {
+      $set['current.nominatorCount'] = nominatorCount;
+    }
+
     const res = await ValidatorModel.updateOne(
       { address: addr },
-      {
-        $setOnInsert: setOnInsert as any,
-        $set: {
-          'current.era': era,
-          'current.inActiveSet': true,
-          'current.bondedAmount': bondedAmount,
-          'current.rankInPool': rankInPool,
-          'current.faults': 0,
-          'current.offlineSeconds': 0,
-          'current.unclaimedEras': 0,
-          'current.discoveryTenureDays': 0,
-          'current.recentNominations': 0,
-        },
-      },
+      { $setOnInsert: setOnInsert, $set },
       { upsert: true }
     );
-
     if ((res as any)?.upsertedCount || (res as any)?.modifiedCount) upserted++;
   }
 
@@ -138,5 +156,5 @@ const ranked = [...bondedMap.entries()]
   return { scanned: validators.length, upserted };
 }
 
-// Alias agar kompatibel dengan index.ts lama
+// alias for backward compatibility
 export const collectBatch = collectValidatorsSnapshot;
