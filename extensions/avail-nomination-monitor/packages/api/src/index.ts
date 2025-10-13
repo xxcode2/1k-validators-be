@@ -2,6 +2,7 @@ import 'dotenv/config';
 import express from 'express';
 import cors from 'cors';
 import { connectMongo, ValidatorModel } from '@avail-np/db';
+import { router as candidatesRouter } from './routes/candidates';
 
 const PORT = Number(process.env.PORT || 3000);
 const MONGO_URI = process.env.MONGO_URI || 'mongodb://localhost:27017/avail_np';
@@ -14,6 +15,8 @@ async function main() {
   app.use(express.json());
 
   app.get('/health', (_req, res) => res.json({ ok: true }));
+app.use('/candidates', candidatesRouter);
+
 
   // list validators
   app.get('/validators', async (req, res) => {
@@ -37,6 +40,7 @@ async function main() {
     if (!v) return res.status(404).json({ error: 'Not found' });
     res.json(v);
   });
+
 
   // simple recommendations (top-N)
   app.get('/recommendations', async (req, res) => {
