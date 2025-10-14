@@ -1,19 +1,21 @@
-# docker-compose.avail.yml (root 1k-validators-be)
 services:
   avail_mongo:
     image: mongo:7
     container_name: avail_mongo
-    ports: ["27017:27017"]
+    ports:
+      - "27017:27017"
     volumes:
       - avail_mongo_data:/data/db
 
   avail_mongo_express:
     image: mongo-express
     container_name: avail_mongo_express
-    depends_on: [avail_mongo]
+    depends_on:
+      - avail_mongo
     environment:
       ME_CONFIG_MONGODB_URL: mongodb://avail_mongo:27017
-    ports: ["8082:8081"]
+    ports:
+      - "8082:8081"
 
   avail_api:
     container_name: avail_api
@@ -23,13 +25,10 @@ services:
       target: api
     env_file:
       - ./extensions/avail-nomination-monitor/.env
-    environment:
-      MONGO_URI: mongodb://avail_mongo:27017/avail_np
-      PORT: "3000"
-      RPC_ENDPOINT: ${RPC_ENDPOINT:-wss://mainnet.avail-rpc.com/}
-      CRON: "*/10 * * * *"
-    depends_on: [avail_mongo]
-    ports: ["3000:3000"]
+    depends_on:
+      - avail_mongo
+    ports:
+        - "${PORT:-3030}:${PORT:-3030}"
 
   avail_worker:
     container_name: avail_worker
@@ -39,11 +38,8 @@ services:
       target: worker
     env_file:
       - ./extensions/avail-nomination-monitor/.env
-    environment:
-      MONGO_URI: mongodb://avail_mongo:27017/avail_np
-      RPC_ENDPOINT: ${RPC_ENDPOINT:-wss://mainnet.avail-rpc.com/}
-      CRON: "*/10 * * * *"
-    depends_on: [avail_mongo]
+    depends_on:
+      - avail_mongo
 
 volumes:
   avail_mongo_data:

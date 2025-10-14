@@ -5,22 +5,21 @@ import { ValidatorModel } from '@avail-np/db/dist/models/Validator';
 
 type Logger = Pick<Console, 'info' | 'warn' | 'error'>;
 
-const RPC_ENDPOINT = process.env.RPC_ENDPOINT || 'wss://mainnet.avail-rpc.com/';
 const DEFAULT_OFFLINE_SECONDS = Number(process.env.SESSION_LENGTH_SECONDS || 1200);
 
-// --- Avail SDK: import sebagai any agar kompatibel lintas versi ---
 /* eslint-disable @typescript-eslint/no-var-requires */
+// Import sebagai any agar kompatibel lintas versi avail-js-sdk
 const sdk: any = require('avail-js-sdk');
 /* eslint-enable @typescript-eslint/no-var-requires */
 
 let apiSingleton: ApiPromise | null = null;
 
 function resolveAvailOptions(): Record<string, unknown> {
-  // Kalau versi SDK punya helper getApiOptions, pakai itu
+  // Jika SDK menyediakan helper
   if (typeof sdk?.getApiOptions === 'function') {
     return sdk.getApiOptions();
   }
-  // Fallback ke properti langsung bila tersedia
+  // Jika tidak, ambil properti langsung bila ada
   const opts: Record<string, unknown> = {};
   if (sdk?.typesBundle) opts.typesBundle = sdk.typesBundle;
   if (sdk?.rpc) opts.rpc = sdk.rpc;
@@ -29,26 +28,33 @@ function resolveAvailOptions(): Record<string, unknown> {
   return opts;
 }
 
-export async function ensureApi(logger: Logger): Promise<ApiPromise> {
+export async function ensureApi(logger: Logger, endpoint?: string): Promise<ApiPromise> {
   if (apiSingleton && apiSingleton.isConnected) return apiSingleton;
 
-  const provider = new WsProvider(RPC_ENDPOINT);
-  const availOptions = resolveAvailOptions();
+  const RPC_ENDPOINT = endpoint ?? process.env.RPC_ENDPOINT;
+  if (!RPC_ENDPOINT) {
+    throw new Error('RPC_ENDPOINT is not set. Please set it via env/.env/docker-compose.');
+  }
 
-  const hasDirect = !!(availOptions.typesBundle || availOptions.rpc || availOptions.signedExtensions || availOptions.types);
+  const availOptions = resolveAvailOptions();
+  const hasDirect =
+    !!(availOptions as any)?.typesBundle ||
+    !!(availOptions as any)?.rpc ||
+    !!(availOptions as any)?.signedExtensions ||
+    !!(availOptions as any)?.types;
+
   logger.info(
     hasDirect
       ? '[api] avail-js-sdk: using direct exports (types/rpc/extensions)'
       : '[api] avail-js-sdk: no direct exports found, relying on default registry'
   );
-
   logger.info(`[api] connecting to ${RPC_ENDPOINT}`);
+
+  const provider = new WsProvider(RPC_ENDPOINT);
   apiSingleton = await ApiPromise.create({ provider, ...(availOptions as any) });
 
-  const [chain, ver] = await Promise.all([
-    apiSingleton.rpc.system.chain(),
-    apiSingleton.runtimeVersion,
-  ]);
+  const chain = await apiSingleton.rpc.system.chain();
+  const ver = apiSingleton.runtimeVersion;
 
   const has = {
     imOnline: Boolean((apiSingleton.events as any)?.imOnline),
@@ -64,7 +70,7 @@ export async function ensureApi(logger: Logger): Promise<ApiPromise> {
   );
   logger.info(
     `[config] hasPallet.imOnline=${has.imOnline} hasPallet.staking=${has.staking} ` +
-    `hasEvent.imOnline.SomeOffline=${ev.imOnline_SomeOffline} hasEvent.staking.Slashed=${ev.staking_Slashed}`
+      `hasEvent.imOnline.SomeOffline=${ev.imOnline_SomeOffline} hasEvent.staking.Slashed=${ev.staking_Slashed}`
   );
 
   return apiSingleton;
@@ -79,7 +85,11 @@ async function incFaults(stash: string, bn: number, hash: string, logger: Logger
     },
     { upsert: true }
   );
-  logger.info(`[update] faults +1 for ${stash} (matched=${res.matchedCount}, modified=${res.modifiedCount})`);
+  logger.info(
+    `[update] faults +1 for ${stash} (matched=${(res as any)?.matchedCount ?? 0}, modified=${
+      (res as any)?.modifiedCount ?? 0
+    })`
+  );
 }
 
 async function addOffline(stash: string, seconds: number, bn: number, hash: string, logger: Logger) {
@@ -91,7 +101,11 @@ async function addOffline(stash: string, seconds: number, bn: number, hash: stri
     },
     { upsert: true }
   );
-  logger.info(`[update] offlineSeconds +${seconds}s for ${stash} (matched=${res.matchedCount}, modified=${res.modifiedCount})`);
+  logger.info(
+    `[update] offlineSeconds +${seconds}s for ${stash} (matched=${(res as any)?.matchedCount ?? 0}, modified=${
+      (res as any)?.modifiedCount ?? 0
+    })`
+  );
 }
 
 export async function startEventWatcher(logger: Logger = console) {
@@ -120,7 +134,7 @@ export async function startEventWatcher(logger: Logger = console) {
     const arr: any[] = (events as any)?.toArray?.() ?? [];
     logger.info(`[events] #${bn} count=${arr.length}`);
 
-    // Sampling 10 event pertama untuk debug
+    // Sample 10 event pertama untuk debugging
     for (let i = 0; i < Math.min(10, arr.length); i++) {
       const ev = (arr[i] as any)?.event;
       if (!ev) continue;
@@ -148,20 +162,30 @@ export async function startEventWatcher(logger: Logger = console) {
 
       // imOnline.SomeOffline -> tambah offlineSeconds
       if (section === 'imOnline' && method === 'SomeOffline') {
-        const offenders = (ev.data?.[0] as any)?.toJSON?.() ?? ev.data?.[0] ?? [];
+        const offendersRaw = (ev.data?.[0] as any) ?? [];
+        const offendersJson = typeof offendersRaw?.toJSON === 'function' ? offendersRaw.toJSON() : offendersRaw;
         const list: string[] = [];
 
-        if (Array.isArray(offenders)) {
-          for (const off of offenders) {
-            const id = off?.[0] || off?.validatorId || off?.id || off?.accountId || off?.who;
+        if (Array.isArray(offendersJson)) {
+          // Bentuk umum: array of tuples/objects
+          for (const off of offendersJson) {
+            const id =
+              off?.[0] || off?.validatorId || off?.id || off?.accountId || off?.who || off?.stash || off?.address;
             if (id) list.push(String(id));
           }
-        } else if (offenders) {
-          const single = offenders?.validatorId || offenders?.id || offenders?.accountId || offenders?.who;
+        } else if (offendersJson) {
+          // Bentuk object tunggal
+          const single =
+            offendersJson?.validatorId ||
+            offendersJson?.id ||
+            offendersJson?.accountId ||
+            offendersJson?.who ||
+            offendersJson?.stash ||
+            offendersJson?.address;
           if (single) list.push(String(single));
         }
 
-        // fallback kasar
+        // Fallback kasar jika struktur tidak terdeteksi
         if (list.length === 0) {
           const raw0 = String(ev.data?.[0] ?? '');
           if (raw0) list.push(raw0);
