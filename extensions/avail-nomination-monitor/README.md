@@ -193,8 +193,8 @@ Before submitting updates to the Avail team:
 - Confirm current chain via log:
 
 ```[api] connected chain=Avail DA Mainnet spec=avail v49
-
 ```
 Run one full collection cycle:
 ```
-docker compose -f docker-compose.avail.yml logs -f avail_worker | grep '\[collect\]'```
+docker compose -f docker-compose.avail.yml logs -f avail_worker | grep '\[collect\]'
+```
