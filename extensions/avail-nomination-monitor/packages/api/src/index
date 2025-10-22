@@ -1,0 +1,61 @@
+// packages/api/src/index.ts (cuplikan penambahan)
+import express from 'express';
+import cors from 'cors';
+import { connectMongo } from '@avail-np/db/dist/mongo';
+import { ValidatorModel } from '@avail-np/db/dist/models/Validator';
+
+const app = express();
+app.use(cors());
+app.use(express.json());
+
+app.get('/health', (_req, res) => res.json({ ok: true }));
+
+// existing /validators … (biarkan)
+
+// NEW: /candidates (mirror sederhana dari validators)
+app.get('/candidates', async (req, res) => {
+  try {
+    const limit = Number(req.query.limit ?? 50);
+    const offset = Number(req.query.offset ?? 0);
+
+    // sort optional (default by score.total desc)
+    const sortParam = (req.query.sort as string) || 'score.total:desc';
+    const [field, dir] = sortParam.split(':');
+    const sort: Record<string, 1 | -1> = { [field]: dir === 'asc' ? 1 : -1 };
+
+    const items = await ValidatorModel.find({}, {
+      // subset untuk “candidate” view
+      address: 1,
+      'current.bondedAmount': 1,
+      'current.inActiveSet': 1,
+      'current.rankInPool': 1,
+      'current.faults': 1,
+      'current.offlineSeconds': 1,
+      'current.unclaimedEras': 1,
+      'current.discoveryTenureDays': 1,
+      'score.total': 1,
+    })
+      .sort(sort)
+      .skip(offset)
+      .limit(limit)
+      .lean();
+
+    // bisa di-map jika butuh rename field, sementara kirim apa adanya
+    res.json({ items, limit, offset });
+  } catch (e: any) {
+    res.status(500).json({ error: String(e?.message || e) });
+  }
+});
+
+const PORT = Number(process.env.PORT || 3000);
+const MONGO_URI = process.env.MONGO_URI || 'mongodb://mongo:27017/avail_np';
+
+async function main() {
+  await connectMongo(MONGO_URI);
+  app.listen(PORT, () => console.log(`[api] listening on :${PORT}`));
+}
+
+main().catch((e) => {
+  console.error('[api] fatal', e);
+  process.exit(1);
+});
